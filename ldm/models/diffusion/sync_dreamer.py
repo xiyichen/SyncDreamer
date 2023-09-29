@@ -155,10 +155,10 @@ class SpatialVolumeNet(nn.Module):
         V = self.spatial_volume_size
         device = x.device
 
-        spatial_volume_verts = torch.linspace(-self.spatial_volume_length, self.spatial_volume_length, V, dtype=torch.float32, device=device)
-        spatial_volume_verts = torch.stack(torch.meshgrid(spatial_volume_verts, spatial_volume_verts, spatial_volume_verts), -1)
+        spatial_volume_verts = torch.linspace(-self.spatial_volume_length, self.spatial_volume_length, V, dtype=torch.float32, device=device) # [V]
+        spatial_volume_verts = torch.stack(torch.meshgrid(spatial_volume_verts, spatial_volume_verts, spatial_volume_verts), -1) # [V, V, V, 3]
         spatial_volume_verts = spatial_volume_verts.reshape(1, V ** 3, 3)[:, :, (2, 1, 0)]
-        spatial_volume_verts = spatial_volume_verts.view(1, V, V, V, 3).permute(0, 4, 1, 2, 3).repeat(B, 1, 1, 1, 1)
+        spatial_volume_verts = spatial_volume_verts.view(1, V, V, V, 3).permute(0, 4, 1, 2, 3).repeat(B, 1, 1, 1, 1) # [B, 3, V, V, V]
 
         # encode source features
         t_embed_ = t_embed.view(B, 1, self.time_dim).repeat(1, N, 1).view(B, N, self.time_dim)
@@ -173,7 +173,7 @@ class SpatialVolumeNet(nn.Module):
         for ni in range(0, N):
             pose_source_ = target_poses[:, ni]
             K_source_ = target_Ks[:, ni]
-            x_ = self.target_encoder(x[:, ni], t_embed_[:, ni], v_embed_[:, ni])
+            x_ = self.target_encoder(x[:, ni], t_embed_[:, ni], v_embed_[:, ni]) # B, C, V, V
             C = x_.shape[1]
 
             coords_source = get_warp_coordinates(spatial_volume_verts, x_.shape[-1], self.input_image_size, K_source_, pose_source_).view(B, V, V * V, 2)
@@ -209,16 +209,16 @@ class SpatialVolumeNet(nn.Module):
         target_indices = target_indices.view(B*TN) # B*TN
         poses_ = poses[target_indices] # B*TN,3,4
         Ks_ = Ks[target_indices] # B*TN,3,4
-        volume_xyz, volume_depth = create_target_volume(D, self.frustum_volume_size, self.input_image_size, poses_, Ks_, near, far) # B*TN,3 or 1,D,H,W
+        volume_xyz, volume_depth = create_target_volume(D, self.frustum_volume_size, self.input_image_size, poses_, Ks_, near, far) # B*TN,3,D,H,W; B*TN,1,D,H,W
 
         volume_xyz_ = volume_xyz / self.spatial_volume_length  # since the spatial volume is constructed in [-spatial_volume_length,spatial_volume_length]
         volume_xyz_ = volume_xyz_.permute(0, 2, 3, 4, 1)  # B*TN,D,H,W,3
         spatial_volume_ = spatial_volume.unsqueeze(1).repeat(1, TN, 1, 1, 1, 1).view(B * TN, -1, V, V, V)
         volume_feats = F.grid_sample(spatial_volume_, volume_xyz_, mode='bilinear', padding_mode='zeros', align_corners=True) # B*TN,C,D,H,W
 
-        v_embed_ = v_embed[torch.arange(B)[:,None], target_indices.view(B,TN)].view(B*TN, -1) # B*TN
-        t_embed_ = t_embed.unsqueeze(1).repeat(1,TN,1).view(B*TN,-1)
-        volume_feats_dict = self.frustum_volume_feats(volume_feats, t_embed_, v_embed_)
+        v_embed_ = v_embed[torch.arange(B)[:,None], target_indices.view(B,TN)].view(B*TN, -1) # B*TN, v_dim
+        t_embed_ = t_embed.unsqueeze(1).repeat(1,TN,1).view(B*TN,-1) # B*TN, t_dim
+        volume_feats_dict = self.frustum_volume_feats(volume_feats, t_embed_, v_embed_) # 32: B*TN, F, D, H, W
         return volume_feats_dict, volume_depth
 
 class SyncMultiviewDiffusion(pl.LightningModule):
@@ -250,7 +250,6 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         self._init_multiview()
         self._init_clip_image_encoder()
         self._init_clip_projection()
-
         self.spatial_volume = SpatialVolumeNet(self.time_embed_dim, self.viewpoint_dim, self.view_num)
         self.model = UNetWrapper(unet_config, drop_conditions=drop_conditions, drop_scheme=drop_scheme)
         self.scheduler_config = scheduler_config
@@ -415,7 +414,7 @@ class SyncMultiviewDiffusion(pl.LightningModule):
         frustum_volume_feats, frustum_volume_depth = self.spatial_volume.construct_view_frustum_volume(spatial_volume, t_embed, v_embed, self.poses, self.Ks, target_index)
 
         # clip
-        TN = target_index.shape[1]
+        TN = target_index.shape[1] # number of views in a batch
         v_embed_ = v_embed[torch.arange(B)[:,None], target_index].view(B*TN, self.viewpoint_dim) # B*TN,v_dim
         clip_embed_ = clip_embed.unsqueeze(1).repeat(1,TN,1,1).view(B*TN,1,768)
         clip_embed_ = self.cc_projection(torch.cat([clip_embed_, v_embed_.unsqueeze(1)], -1))  # B*TN,1,768
@@ -610,7 +609,7 @@ class SyncDDIMSampler:
         # construct source data
         v_embed = self.model.get_viewpoint_embedding(B, elevation_input) # B,N,v_dim
         t_embed = self.model.embed_time(time_steps)  # B,t_dim
-        spatial_volume = self.model.spatial_volume.construct_spatial_volume(x_target_noisy, t_embed, v_embed, self.model.poses, self.model.Ks)
+        spatial_volume = self.model.spatial_volume.construct_spatial_volume(x_target_noisy, t_embed, v_embed, self.model.poses, self.model.Ks) # B,64,32,32,32; fused spatial features for all 16 views
 
         e_t = []
         target_indices = torch.arange(N) # N
