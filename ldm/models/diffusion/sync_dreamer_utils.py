@@ -49,7 +49,7 @@ def create_target_volume(depth_size, volume_size, input_image_size, pose_target,
     device, dtype = pose_target.device, pose_target.dtype
 
     # compute a depth range on the unit sphere
-    H, W, D, B = volume_size, volume_size, depth_size, pose_target.shape[0]
+    H, W, D, B = volume_size, volume_size, depth_size, pose_target.shape[0] # B: B*TN
     if near is not None and far is not None :
         # near, far b,1,h,w
         depth_values = torch.linspace(0, 1, steps=depth_size).to(near.device).to(near.dtype) # d
