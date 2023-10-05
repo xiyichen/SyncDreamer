@@ -25,9 +25,12 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+import pickle
+import json
 
-from mathutils import Vector, Matrix
+from mathutils import Vector, Matrix, Euler
 import numpy as np
+
 
 import bpy
 from mathutils import Vector
@@ -166,6 +169,8 @@ def load_object(object_path: str) -> None:
         bpy.ops.import_scene.gltf(filepath=object_path, merge_vertices=True)
     elif object_path.endswith(".fbx"):
         bpy.ops.import_scene.fbx(filepath=object_path)
+    elif object_path.endswith(".obj"):
+        bpy.ops.import_scene.obj(filepath=object_path)
     else:
         raise ValueError(f"Unsupported file type: {object_path}")
 
@@ -214,7 +219,12 @@ def get_3x4_RT_matrix_from_blender(cam):
     RT = np.concatenate([R_world2cv,t_world2cv[:,None]],1)
     return RT
 
-def normalize_scene():
+def normalize_scene(object_uid, global_orient):
+    scene.objects[object_uid].rotation_euler.order = 'ZYX'
+    scene.objects[object_uid].rotation_euler[0] = -global_orient[0]+np.pi/2
+    scene.objects[object_uid].rotation_euler[1] = -global_orient[1]
+    scene.objects[object_uid].rotation_euler[2] = -global_orient[2]
+    bpy.ops.object.select_all(action="DESELECT")
     bbox_min, bbox_max = scene_bbox()
     scale = 1 / max(bbox_max - bbox_min)
     for obj in scene_root_objects():
@@ -225,17 +235,24 @@ def normalize_scene():
     offset = -(bbox_min + bbox_max) / 2
     for obj in scene_root_objects():
         obj.matrix_world.translation += offset
-    bpy.ops.object.select_all(action="DESELECT")
+    
+    bbox_min, bbox_max = scene_bbox()
+    print(1 / max(bbox_max - bbox_min), -(bbox_min + bbox_max) / 2)
+    return scale, offset
 
 def save_images(object_file: str) -> None:
     object_uid = os.path.basename(object_file).split(".")[0]
     os.makedirs(args.output_dir, exist_ok=True)
+    
+    with open('/local/home/xiychen/Documents/SyncDreamer/global_orient.json', 'r') as f:
+        global_orients = json.load(f)
 
     reset_scene()
     # load the object
     load_object(object_file)
     # object_uid = os.path.basename(object_file).split(".")[0]
-    normalize_scene()
+    scale, offset = normalize_scene(object_uid, np.array(global_orients[str(int(object_uid))]))
+    np.save(f'/local/home/xiychen/data/thuman_smplx/normalization/{object_uid}.npy', np.array([scale, offset.x, offset.y, offset.z]))
 
     # create an empty object to track
     empty = bpy.data.objects.new("Empty", None)
